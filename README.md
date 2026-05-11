@@ -243,3 +243,281 @@ https://github.com/ewan-xu/LibrosaCpp/blob/main/librosa/librosa.h
 curl -L -O https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.zip
 mkdir eigen3
 mv eigen-3.4.0/Eigen eigen3/
+
+
+#######################################################################################################################################
+import numpy as np
+import cv2
+from scipy.ndimage import gaussian_filter
+
+
+# =========================================================
+# SAFE PARAMETER RANGES
+# These ranges are intentionally chosen so that:
+# 1. anomalies are clearly distinguishable from normal
+# 2. anomalies are NOT absurdly unrealistic
+# =========================================================
+
+PARAMS = {
+    "harmonic_shift": {
+        "freq_shift_bins": (6, 18),      # IMPORTANT
+        "region_h": (24, 72),
+        "region_w": (18, 64),
+    },
+
+    "spectral_warp": {
+        "warp_strength": (0.18, 0.45),   # IMPORTANT
+        "region_h": (32, 96),
+        "region_w": (24, 80),
+    },
+
+    "frequency_smearing": {
+        "blur_sigma": (2.0, 5.0),        # IMPORTANT
+        "region_h": (32, 96),
+        "region_w": (18, 72),
+    },
+
+    "bandwidth_degradation": {
+        "downsample_factor": (2, 5),     # IMPORTANT
+        "region_h": (48, 128),
+        "region_w": (32, 96),
+    }
+}
+
+
+# =========================================================
+# HELPER FUNCTIONS
+# =========================================================
+
+def random_region(spec, h_range, w_range):
+    H, W = spec.shape
+
+    rh = np.random.randint(h_range[0], h_range[1])
+    rw = np.random.randint(w_range[0], w_range[1])
+
+    y1 = np.random.randint(0, H - rh)
+    x1 = np.random.randint(0, W - rw)
+
+    return y1, y1 + rh, x1, x1 + rw
+
+
+def gaussian_mask(h, w, sigma_ratio=0.25):
+
+    y = np.linspace(-1, 1, h)
+    x = np.linspace(-1, 1, w)
+
+    xx, yy = np.meshgrid(x, y)
+
+    sigma = sigma_ratio
+
+    mask = np.exp(-(xx**2 + yy**2) / (2 * sigma**2))
+
+    mask = mask / mask.max()
+
+    return mask
+
+
+def blend(original, modified, mask):
+    return original * (1 - mask) + modified * mask
+
+
+# =========================================================
+# 1. HARMONIC SHIFT
+# =========================================================
+
+def harmonic_shift(spec):
+
+    spec = spec.copy()
+
+    p = PARAMS["harmonic_shift"]
+
+    y1, y2, x1, x2 = random_region(
+        spec,
+        p["region_h"],
+        p["region_w"]
+    )
+
+    shift = np.random.randint(
+        p["freq_shift_bins"][0],
+        p["freq_shift_bins"][1]
+    )
+
+    region = spec[y1:y2, x1:x2]
+
+    shifted = np.roll(region, shift, axis=0)
+
+    mask = gaussian_mask(y2 - y1, x2 - x1)
+
+    spec[y1:y2, x1:x2] = blend(
+        region,
+        shifted,
+        mask
+    )
+
+    return spec
+
+
+# =========================================================
+# 2. SPECTRAL WARP
+# =========================================================
+
+def spectral_warp(spec):
+
+    spec = spec.copy()
+
+    p = PARAMS["spectral_warp"]
+
+    y1, y2, x1, x2 = random_region(
+        spec,
+        p["region_h"],
+        p["region_w"]
+    )
+
+    region = spec[y1:y2, x1:x2]
+
+    h, w = region.shape
+
+    strength = np.random.uniform(
+        p["warp_strength"][0],
+        p["warp_strength"][1]
+    )
+
+    warped = np.zeros_like(region)
+
+    for x in range(w):
+
+        shift = int(
+            strength * np.sin(2 * np.pi * x / w) * h * 0.25
+        )
+
+        warped[:, x] = np.roll(region[:, x], shift)
+
+    mask = gaussian_mask(h, w)
+
+    spec[y1:y2, x1:x2] = blend(
+        region,
+        warped,
+        mask
+    )
+
+    return spec
+
+
+# =========================================================
+# 3. FREQUENCY SMEARING
+# =========================================================
+
+def frequency_smearing(spec):
+
+    spec = spec.copy()
+
+    p = PARAMS["frequency_smearing"]
+
+    y1, y2, x1, x2 = random_region(
+        spec,
+        p["region_h"],
+        p["region_w"]
+    )
+
+    region = spec[y1:y2, x1:x2]
+
+    sigma = np.random.uniform(
+        p["blur_sigma"][0],
+        p["blur_sigma"][1]
+    )
+
+    # IMPORTANT:
+    # vertical blur >> horizontal blur
+    smeared = gaussian_filter(
+        region,
+        sigma=(sigma, 0.6)
+    )
+
+    mask = gaussian_mask(y2 - y1, x2 - x1)
+
+    spec[y1:y2, x1:x2] = blend(
+        region,
+        smeared,
+        mask
+    )
+
+    return spec
+
+
+# =========================================================
+# 4. BANDWIDTH DEGRADATION
+# =========================================================
+
+def bandwidth_degradation(spec):
+
+    spec = spec.copy()
+
+    p = PARAMS["bandwidth_degradation"]
+
+    y1, y2, x1, x2 = random_region(
+        spec,
+        p["region_h"],
+        p["region_w"]
+    )
+
+    region = spec[y1:y2, x1:x2]
+
+    h, w = region.shape
+
+    factor = np.random.randint(
+        p["downsample_factor"][0],
+        p["downsample_factor"][1]
+    )
+
+    # downsample
+    small = cv2.resize(
+        region,
+        (max(1, w // factor), max(1, h // factor)),
+        interpolation=cv2.INTER_LINEAR
+    )
+
+    # upsample back
+    degraded = cv2.resize(
+        small,
+        (w, h),
+        interpolation=cv2.INTER_LINEAR
+    )
+
+    mask = gaussian_mask(h, w)
+
+    spec[y1:y2, x1:x2] = blend(
+        region,
+        degraded,
+        mask
+    )
+
+    return spec
+
+
+# =========================================================
+# MAIN GENERATOR
+# =========================================================
+
+DISTORTION_FUNCS = {
+    "harmonic_shift": harmonic_shift,
+    "spectral_warp": spectral_warp,
+    "frequency_smearing": frequency_smearing,
+    "bandwidth_degradation": bandwidth_degradation,
+}
+
+
+def generate_frequency_distortion(spec):
+
+    distortion_type = np.random.choice(
+        [
+            "harmonic_shift",
+            "spectral_warp",
+            "frequency_smearing",
+            "bandwidth_degradation"
+        ],
+        p=[0.30, 0.30, 0.25, 0.15]
+    )
+
+    distorted = DISTORTION_FUNCS[distortion_type](spec)
+
+    return distorted, distortion_type
